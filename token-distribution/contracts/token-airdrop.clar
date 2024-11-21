@@ -9,6 +9,8 @@
 (define-constant ERROR-AIRDROP-NOT-ACTIVE (err u104))
 (define-constant ERROR-INVALID-AMOUNT (err u105))
 (define-constant ERROR-RECLAIM-PERIOD-NOT-ENDED (err u106))
+(define-constant ERROR-INVALID-RECIPIENT (err u107))
+(define-constant ERROR-INVALID-PERIOD (err u108))
 
 ;; Define data variables
 (define-data-var is-airdrop-active bool true)
@@ -37,33 +39,24 @@
 
 ;; Admin functions
 
-(define-public (set-airdrop-active-status (new-active-status bool))
-  (begin
-    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERROR-NOT-CONTRACT-OWNER)
-    (var-set is-airdrop-active new-active-status)
-    (if new-active-status
-      (var-set airdrop-start-block block-height)
-      true
-    )
-    (log-event "STATUS_CHANGE" (concat "Active: " (if new-active-status "true" "false")))
-    (ok new-active-status)))
-
 (define-public (add-eligible-recipient (recipient-address principal))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-OWNER) ERROR-NOT-CONTRACT-OWNER)
-    (log-event "RECIPIENT_ADDED" (concat "Address: " (to-ascii (serialize-principal recipient-address))))
+    (asserts! (is-none (map-get? eligible-airdrop-recipients recipient-address)) ERROR-INVALID-RECIPIENT)
+    (log-event "recipient-add" "new recipient")
     (ok (map-set eligible-airdrop-recipients recipient-address true))))
 
 (define-public (remove-eligible-recipient (recipient-address principal))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-OWNER) ERROR-NOT-CONTRACT-OWNER)
-    (log-event "RECIPIENT_REMOVED" (concat "Address: " (to-ascii (serialize-principal recipient-address))))
+    (asserts! (is-some (map-get? eligible-airdrop-recipients recipient-address)) ERROR-RECIPIENT-NOT-ELIGIBLE)
+    (log-event "recipient-remove" "removed recipient")
     (ok (map-delete eligible-airdrop-recipients recipient-address))))
 
 (define-public (bulk-add-eligible-recipients (recipient-addresses (list 200 principal)))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-OWNER) ERROR-NOT-CONTRACT-OWNER)
-    (log-event "BULK_RECIPIENTS_ADDED" (concat "Count: " (to-ascii (serialize-uint (len recipient-addresses)))))
+    (log-event "bulk-recipients-add" "recipients added")
     (ok (map add-eligible-recipient recipient-addresses))))
 
 (define-public (update-airdrop-amount (new-amount uint))
@@ -71,14 +64,15 @@
     (asserts! (is-eq tx-sender CONTRACT-OWNER) ERROR-NOT-CONTRACT-OWNER)
     (asserts! (> new-amount u0) ERROR-INVALID-AMOUNT)
     (var-set airdrop-amount-per-recipient new-amount)
-    (log-event "AMOUNT_UPDATED" (concat "New Amount: " (to-ascii (serialize-uint new-amount))))
+    (log-event "amount-updated" "amount changed")
     (ok new-amount)))
 
 (define-public (update-reclaim-period (new-period uint))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-OWNER) ERROR-NOT-CONTRACT-OWNER)
+    (asserts! (> new-period u0) ERROR-INVALID-PERIOD)
     (var-set reclaim-period-length new-period)
-    (log-event "PERIOD_UPDATED" (concat "New Period: " (to-ascii (serialize-uint new-period))))
+    (log-event "period-updated" "reclaim period changed")
     (ok new-period)))
 
 ;; Airdrop distribution function
@@ -91,11 +85,11 @@
     (asserts! (var-get is-airdrop-active) ERROR-AIRDROP-NOT-ACTIVE)
     (asserts! (is-some (map-get? eligible-airdrop-recipients recipient-address)) ERROR-RECIPIENT-NOT-ELIGIBLE)
     (asserts! (is-none (map-get? claimed-airdrop-amounts recipient-address)) ERROR-AIRDROP-ALREADY-CLAIMED)
-    (asserts! (<= claim-amount (get-balance CONTRACT-OWNER)) ERROR-INSUFFICIENT-TOKEN-BALANCE)
+    (asserts! (<= claim-amount (ft-get-balance airdrop-distribution-token CONTRACT-OWNER)) ERROR-INSUFFICIENT-TOKEN-BALANCE)
     (try! (ft-transfer? airdrop-distribution-token claim-amount CONTRACT-OWNER recipient-address))
     (map-set claimed-airdrop-amounts recipient-address claim-amount)
     (var-set total-tokens-distributed (+ (var-get total-tokens-distributed) claim-amount))
-    (log-event "TOKENS_CLAIMED" (concat "Address: " (to-ascii (serialize-principal recipient-address))))
+    (log-event "tokens-claimed" "tokens claimed")
     (ok claim-amount)))
 
 ;; Token reclaim function
@@ -113,7 +107,7 @@
       (unclaimed-amount (- total-minted total-claimed))
     )
       (try! (ft-burn? airdrop-distribution-token unclaimed-amount CONTRACT-OWNER))
-      (log-event "TOKENS_RECLAIMED" (concat "Amount: " (to-ascii (serialize-uint unclaimed-amount))))
+      (log-event "tokens-reclaimed" "unclaimed tokens burned")
       (ok unclaimed-amount))))
 
 ;; Read-only functions
